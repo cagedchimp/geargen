@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GearGen</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <main id="stage">
+      <canvas id="canvas"></canvas>
+      <div id="toolbar">
+        <button id="btn-play">Pause</button>
+        <label class="speed">Speed
+          <input id="speed" type="range" min="0" max="5" step="0.05" value="1">
+          <span id="speed-val">1.00×</span>
+        </label>
+        <button id="btn-fit" title="Fit view (F)">Fit</button>
+        <label><input type="checkbox" id="opt-pitch" checked> Pitch circles</label>
+        <label><input type="checkbox" id="opt-labels" checked> Labels</label>
+      </div>
+      <div id="status" hidden></div>
+    </main>
+
+    <aside id="panel">
+      <h1>GearGen</h1>
+
+      <section>
+        <h2>Gears</h2>
+        <ul id="gear-list"></ul>
+        <div class="row"><button id="btn-add-free">+ New driver gear</button></div>
+        <p class="legend">★ driver &nbsp; ⊙ same axle as parent</p>
+      </section>
+
+      <section id="sel-section">
+        <h2>Selected gear</h2>
+        <div id="props"></div>
+        <div class="row">
+          <button id="btn-add-mesh">+ Meshing gear</button>
+          <button id="btn-add-axle">+ Gear on same axle</button>
+        </div>
+        <div class="row">
+          <button id="btn-detach">Make driver</button>
+          <button id="btn-delete" class="danger">Delete</button>
+        </div>
+        <table id="info"></table>
+      </section>
+
+      <section>
+        <h2>Export</h2>
+        <div class="row">
+          <button id="btn-svg">Selected → SVG</button>
+          <button id="btn-dxf">Selected → DXF</button>
+          <button id="btn-layout-svg">Whole layout → SVG</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>File</h2>
+        <div class="row">
+          <button id="btn-save">Save .json</button>
+          <button id="btn-load">Load .json</button>
+          <button id="btn-reset" class="danger">Reset</button>
+        </div>
+        <input type="file" id="file-input" accept=".json,application/json" hidden>
+      </section>
+
+      <p class="hint">
+        Drag a gear to move it — meshed gears orbit their parent, driver gears move the whole train
+        (hold Shift to snap to 1&nbsp;mm). Drag empty space to pan, scroll to zoom.
+        Keys: <kbd>Space</kbd> play/pause, <kbd>Del</kbd> delete, <kbd>F</kbd> fit.
+        Work is auto-saved in this browser.
+      </p>
+    </aside>
+  </div>
+
+  <script src="js/gear.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
