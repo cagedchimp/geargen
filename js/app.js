@@ -287,7 +287,7 @@
       if (opts.pitch) {
         ctx.save();
         ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+        ctx.strokeStyle = cssVar('--pitch');
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.arc(sx, sy, dims.r * view.scale, 0, TAU);
