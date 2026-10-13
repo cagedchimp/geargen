@@ -19,6 +19,7 @@
   let simTime = 0;
   let lastFrame = performance.now();
   let cssW = 0, cssH = 0;
+  let insetR = 0; // canvas width covered by the floating panel
   let solved = new Map();
   const pathCache = new Map();
 
@@ -206,13 +207,18 @@
     return entry;
   }
 
-  const w2s = (x, y) => [cssW / 2 + (x - view.x) * view.scale, cssH / 2 + (y - view.y) * view.scale];
-  const s2w = (x, y) => [(x - cssW / 2) / view.scale + view.x, (y - cssH / 2) / view.scale + view.y];
+  // View centre is the middle of the part of the canvas not covered by the panel.
+  const cx = () => (cssW - insetR) / 2;
+  const w2s = (x, y) => [cx() + (x - view.x) * view.scale, cssH / 2 + (y - view.y) * view.scale];
+  const s2w = (x, y) => [(x - cx()) / view.scale + view.x, (y - cssH / 2) / view.scale + view.y];
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     const r = canvas.getBoundingClientRect();
     cssW = r.width; cssH = r.height;
+    const pr = $('panel').getBoundingClientRect();
+    const overlaps = pr.left < r.right && pr.top < r.bottom && pr.bottom > r.top;
+    insetR = overlaps ? Math.max(0, r.right - pr.left) : 0;
     canvas.width = Math.max(1, Math.round(r.width * dpr));
     canvas.height = Math.max(1, Math.round(r.height * dpr));
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -677,7 +683,7 @@
     const f = Math.exp(-e.deltaY * 0.0015);
     view.scale = Math.min(200, Math.max(0.05, view.scale * f));
     // keep point under the cursor fixed
-    view.x = wx - (sx - cssW / 2) / view.scale;
+    view.x = wx - (sx - cx()) / view.scale;
     view.y = wy - (sy - cssH / 2) / view.scale;
   }, { passive: false });
 
@@ -692,7 +698,7 @@
     }
     view.x = (x0 + x1) / 2;
     view.y = (y0 + y1) / 2;
-    view.scale = Math.min(cssW / (x1 - x0), cssH / (y1 - y0)) * 0.85;
+    view.scale = Math.min((cssW - insetR) / (x1 - x0), cssH / (y1 - y0)) * 0.85;
   }
 
   // ---------------------------------------------------------------- export
@@ -808,7 +814,9 @@ ${body.join('\n')}
     else if (e.key === 'f') fit();
   });
 
-  new ResizeObserver(resize).observe(canvas);
+  const ro = new ResizeObserver(resize);
+  ro.observe(canvas);
+  ro.observe($('panel'));
 
   // ---------------------------------------------------------------- boot
 
