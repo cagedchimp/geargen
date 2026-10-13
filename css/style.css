@@ -77,6 +77,52 @@ html, body {
   padding: 4px 8px;
 }
 #toolbar button.active { border-color: var(--measure); color: var(--measure); }
+/* Zoom control: − [123%] + with a drop-down menu */
+.zoom { position: relative; display: inline-flex; }
+.zoom > button { border-radius: 0; }
+.zoom > button + button { border-left-width: 0; }
+.zoom > button:first-child { border-radius: 6px 0 0 6px; }
+.zoom > #btn-zoom-in { border-radius: 0 6px 6px 0; }
+#zoom-pct { min-width: 4.2em; font-variant-numeric: tabular-nums; }
+#zoom-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  min-width: 210px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 10, 25, 0.5);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+}
+#zoom-menu[hidden] { display: none; }
+#toolbar #zoom-menu button {
+  background: transparent;
+  border: 0;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+#toolbar #zoom-menu button:hover { background: var(--control); }
+#zoom-menu hr { width: 100%; border: 0; border-top: 1px solid var(--glass-border); margin: 4px 0; }
+#zoom-menu kbd { color: var(--muted); }
+
+/* Bigger touch targets on phones and tablets */
+@media (pointer: coarse) {
+  #toolbar button, #toolbar label { min-height: 40px; }
+  .zoom > button { min-width: 40px; font-size: 16px; }
+  #toolbar #zoom-menu button { min-height: 40px; align-items: center; }
+}
+
 #speed-val { font-variant-numeric: tabular-nums; min-width: 3.5em; }
 
 #status {
@@ -206,6 +252,21 @@ kbd { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-
   #app { height: auto; }
   #stage { position: relative; height: 60vh; }
   #toolbar, #status, #toast { right: 12px; }
+  /* One swipeable row of controls instead of several wrapped rows over the drawing */
+  #toolbar {
+    top: 0; left: 0; right: 0;
+    padding: 8px 12px;
+    gap: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  #toolbar::-webkit-scrollbar { display: none; }
+  #toolbar > * { flex: none; }
+  #speed { width: 80px; }
+  /* The row scrolls, so the menu is positioned against the window (see setZoomMenu). */
+  #zoom-menu { position: fixed; }
   #panel { position: static; width: auto; margin: 12px; }
 }
 

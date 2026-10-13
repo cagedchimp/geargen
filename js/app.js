@@ -482,6 +482,8 @@
     const dt = Math.min((now - lastFrame) / 1000, 0.1);
     lastFrame = now;
     if (running) simTime += dt * speed;
+    stepZoomAnim(now);
+    updateZoomLabel();
     solved = solve(simTime);
     draw();
     requestAnimationFrame(frame);
@@ -916,9 +918,108 @@
     canvas.style.cursor = on ? 'crosshair' : '';
   }
 
+  // ---------------------------------------------------------------- zoom
+
+  const MIN_SCALE = 0.05, MAX_SCALE = 200; // px per mm
+  const PX_PER_MM = 96 / 25.4; // CSS pixels per millimetre: 100% is roughly actual size
+  const clampScale = (v) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, v));
+  let zoomAnim = null; // { from, to, t0 } for smooth button/menu zooms
+
+  /** Set the zoom immediately, keeping the world point under screen point (sx, sy) fixed. */
+  function zoomAt(scale, sx, sy) {
+    zoomAnim = null;
+    const [wx, wy] = s2w(sx, sy);
+    view.scale = clampScale(scale);
+    view.x = wx - (sx - cx()) / view.scale;
+    view.y = wy - (sy - cssH / 2) / view.scale;
+  }
+
+  /** Glide to a view (centre and scale) over a short animation. */
+  function animateTo(x, y, scale) {
+    zoomAnim = { from: { x: view.x, y: view.y, scale: view.scale }, to: { x, y, scale: clampScale(scale) }, t0: performance.now() };
+  }
+
+  function stepZoomAnim(now) {
+    if (!zoomAnim) return;
+    const { from, to, t0 } = zoomAnim;
+    const t = Math.min(1, (now - t0) / 180);
+    const e = 1 - (1 - t) ** 3;
+    // Interpolate scale geometrically so zooming feels even.
+    view.scale = from.scale * (to.scale / from.scale) ** e;
+    view.x = from.x + (to.x - from.x) * e;
+    view.y = from.y + (to.y - from.y) * e;
+    if (t >= 1) zoomAnim = null;
+  }
+
+  const zoomBy = (f) => animateTo(view.x, view.y, (zoomAnim ? zoomAnim.to.scale : view.scale) * f);
+  const zoomToPercent = (pct) => animateTo(view.x, view.y, (pct / 100) * PX_PER_MM);
+
+  function fitBounds(x0, y0, x1, y1, instant) {
+    const w = Math.max(x1 - x0, 1e-6), h = Math.max(y1 - y0, 1e-6);
+    const x = (x0 + x1) / 2, y = (y0 + y1) / 2, scale = Math.min((cssW - insetR) / w, cssH / h) * 0.85;
+    if (instant) { zoomAnim = null; view.x = x; view.y = y; view.scale = clampScale(scale); }
+    else animateTo(x, y, scale);
+  }
+
+  function partBounds(g) {
+    const s = solved.get(g.id);
+    const r = Geom.dims(g).outer;
+    return [s.x - r, s.y - r, s.x + r, s.y + r];
+  }
+
+  function fit(instant) {
+    if (!state.gears.length) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const g of state.gears) {
+      const [a, b, c, d] = partBounds(g);
+      x0 = Math.min(x0, a); y0 = Math.min(y0, b); x1 = Math.max(x1, c); y1 = Math.max(y1, d);
+    }
+    fitBounds(x0, y0, x1, y1, instant);
+  }
+
+  function fitSelected() {
+    const g = selected();
+    if (g) fitBounds(...partBounds(g)); else fit();
+  }
+
+  let lastZoomLabel = '';
+  function updateZoomLabel() {
+    const pct = (zoomAnim ? zoomAnim.to.scale : view.scale) / PX_PER_MM * 100;
+    const text = (pct >= 10 ? Math.round(pct) : +pct.toFixed(1)) + '%';
+    if (text !== lastZoomLabel) { $('zoom-pct').textContent = text; lastZoomLabel = text; }
+  }
+
+  // ---------------------------------------------------------------- pointer: drag, pan, measure, pinch
+
+  const pointers = new Map(); // pointerId -> [sx, sy] for every finger / mouse button down
+  let pinch = null;
+
+  function twoPointers() {
+    const [a, b] = [...pointers.values()];
+    return { dist: Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+  }
+
+  /** A second finger turns whatever the first one started into a pinch-zoom. */
+  function startPinch() {
+    if (drag && drag.mode === 'gear' && drag.moved) {
+      // The first finger nudged a part before the second landed: put it back.
+      const t = drag.target;
+      if (t.relation === 'mesh') t.angle = drag.startAngle; else { t.x = drag.startX; t.y = drag.startY; }
+      solved = solve(simTime);
+    }
+    drag = null;
+    if (measure.dragging) { measure.a = measure.b = null; measure.dragging = false; }
+    zoomAnim = null;
+    const { dist, mid } = twoPointers();
+    pinch = { dist, scale: view.scale, world: s2w(mid[0], mid[1]) };
+  }
+
   canvas.addEventListener('pointerdown', (e) => {
-    canvas.setPointerCapture(e.pointerId);
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     const [sx, sy] = pointerPos(e);
+    pointers.set(e.pointerId, [sx, sy]);
+    if (pointers.size === 2) { startPinch(); return; }
+    if (pointers.size > 2 || pinch) return;
     if (measure.on) {
       measure.a = measurePoint(sx, sy);
       measure.b = measure.a;
@@ -937,7 +1038,7 @@
         drag = { mode: 'blocked', why, sx, sy };
         return;
       }
-      drag = { mode: 'gear', target, wx, wy, moved: false };
+      drag = { mode: 'gear', target, wx, wy, sx, sy, moved: false };
       if (target.relation === 'mesh') {
         const ps = solved.get(target.parent);
         drag.startMouse = Math.atan2(wy - ps.y, wx - ps.x);
@@ -961,15 +1062,27 @@
 
   canvas.addEventListener('pointermove', (e) => {
     const [sx, sy] = pointerPos(e);
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, [sx, sy]);
+    if (pinch) {
+      if (pointers.size < 2) return;
+      const { dist, mid } = twoPointers();
+      // Scale with the finger spread, and keep the point between the fingers under them (pans too).
+      view.scale = clampScale(pinch.scale * (dist / pinch.dist));
+      view.x = pinch.world[0] - (mid[0] - cx()) / view.scale;
+      view.y = pinch.world[1] - (mid[1] - cssH / 2) / view.scale;
+      return;
+    }
     if (measure.on) {
       if (measure.dragging) measure.b = measurePoint(sx, sy, measure.a, e.shiftKey);
       return;
     }
-    if (!drag) { canvas.style.cursor = hoverCursor(sx, sy); return; }
+    if (!drag) { if (e.pointerType === 'mouse') canvas.style.cursor = hoverCursor(sx, sy); return; }
     if (drag.mode === 'blocked') {
       if (!drag.warned && Math.hypot(sx - drag.sx, sy - drag.sy) > 4) { drag.warned = true; toast(drag.why); }
       return;
     }
+    // Ignore tiny jitter so a tap doesn't count as a drag on touch screens.
+    if (!drag.moved && Math.hypot(sx - drag.sx, sy - drag.sy) < 3) return;
     drag.moved = true;
     if (drag.mode === 'pan') {
       view.x = drag.vx - (sx - drag.sx) / view.scale;
@@ -989,7 +1102,21 @@
     solved = solve(simTime);
   });
 
-  function endDrag() {
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (pinch) {
+      if (pointers.size === 1) {
+        // One finger left: carry on panning from where it is, without a jump.
+        const [sx, sy] = [...pointers.values()][0];
+        pinch = null;
+        drag = { mode: 'pan', sx, sy, vx: view.x, vy: view.y, moved: true };
+      } else if (pointers.size === 0) {
+        pinch = null;
+        drag = null;
+      }
+      return;
+    }
+    if (pointers.size) return;
     if (measure.on) {
       measure.dragging = false;
       return;
@@ -999,34 +1126,18 @@
     else if (drag.mode === 'gear' && drag.moved) changed();
     drag = null;
   }
-  canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+  // Safari fires its own pinch gestures; the canvas handles pinching itself.
+  canvas.addEventListener('gesturestart', (e) => e.preventDefault());
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
-    const [wx, wy] = s2w(sx, sy);
-    const f = Math.exp(-e.deltaY * 0.0015);
-    view.scale = Math.min(200, Math.max(0.05, view.scale * f));
-    // keep point under the cursor fixed
-    view.x = wx - (sx - cx()) / view.scale;
-    view.y = wy - (sy - cssH / 2) / view.scale;
+    const [sx, sy] = pointerPos(e);
+    // Trackpad pinches arrive as ctrl+wheel with small deltas: make them a bit more responsive.
+    const k = e.ctrlKey ? 0.01 : 0.0015;
+    zoomAt(view.scale * Math.exp(-e.deltaY * k), sx, sy);
   }, { passive: false });
-
-  function fit() {
-    if (!state.gears.length) return;
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const g of state.gears) {
-      const s = solved.get(g.id);
-      const r = Geom.dims(g).outer;
-      x0 = Math.min(x0, s.x - r); x1 = Math.max(x1, s.x + r);
-      y0 = Math.min(y0, s.y - r); y1 = Math.max(y1, s.y + r);
-    }
-    view.x = (x0 + x1) / 2;
-    view.y = (y0 + y1) / 2;
-    view.scale = Math.min((cssW - insetR) / (x1 - x0), cssH / (y1 - y0)) * 0.85;
-  }
 
   // ---------------------------------------------------------------- export
 
@@ -1175,7 +1286,36 @@ ${body.join('\n')}
     speed = parseFloat(e.target.value);
     $('speed-val').textContent = speed.toFixed(2) + '×';
   });
-  $('btn-fit').addEventListener('click', fit);
+  // Zoom control: − / percentage (opens the zoom menu) / +
+  function setZoomMenu(open) {
+    const menu = $('zoom-menu');
+    menu.hidden = !open;
+    $('zoom-pct').setAttribute('aria-expanded', String(open));
+    if (open && getComputedStyle(menu).position === 'fixed') {
+      // Narrow screens: the toolbar scrolls sideways, so place the menu under the button by hand.
+      const r = $('zoom-pct').getBoundingClientRect();
+      menu.style.top = r.bottom + 6 + 'px';
+      menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+    } else {
+      menu.style.top = menu.style.left = '';
+    }
+  }
+  $('toolbar').addEventListener('scroll', () => setZoomMenu(false));
+  $('btn-zoom-in').addEventListener('click', () => zoomBy(1.25));
+  $('btn-zoom-out').addEventListener('click', () => zoomBy(1 / 1.25));
+  $('zoom-pct').addEventListener('click', () => setZoomMenu($('zoom-menu').hidden));
+  $('zoom-menu').addEventListener('click', (e) => {
+    const item = e.target.closest('[data-zoom]');
+    if (!item) return;
+    const z = item.dataset.zoom;
+    if (z === 'fit') fit();
+    else if (z === 'fit-sel') fitSelected();
+    else zoomToPercent(parseFloat(z));
+    setZoomMenu(false);
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!$('zoom-menu').hidden && !e.target.closest('#zoom')) setZoomMenu(false);
+  });
   $('btn-measure').addEventListener('click', () => setMeasure(!measure.on));
   $('opt-pitch').addEventListener('change', (e) => { opts.pitch = e.target.checked; });
   $('opt-labels').addEventListener('change', (e) => { opts.labels = e.target.checked; });
@@ -1222,8 +1362,12 @@ ${body.join('\n')}
     else if (mod) return;
     else if (e.code === 'Space') { e.preventDefault(); setRunning(!running); }
     else if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
-    else if (key === 'f') fit();
+    else if (key === 'f') { if (e.shiftKey) fitSelected(); else fit(); }
+    else if (e.key === '+' || e.key === '=') zoomBy(1.25);
+    else if (e.key === '-' || e.key === '_') zoomBy(1 / 1.25);
+    else if (e.key === '0') zoomToPercent(100);
     else if (key === 'm') setMeasure(!measure.on);
+    else if (e.key === 'Escape' && !$('zoom-menu').hidden) setZoomMenu(false);
     else if (e.key === 'Escape' && measure.on) setMeasure(false);
   });
 
@@ -1241,6 +1385,6 @@ ${body.join('\n')}
   }
   resize();
   changed();
-  fit();
+  fit(true);
   requestAnimationFrame(frame);
 })();

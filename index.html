@@ -18,7 +18,21 @@
           <input id="speed" type="range" min="0" max="5" step="0.05" value="1">
           <span id="speed-val">1.00×</span>
         </label>
-        <button id="btn-fit" title="Fit view (F)">Fit</button>
+        <div class="zoom" id="zoom">
+          <button id="btn-zoom-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
+          <button id="zoom-pct" title="Zoom options" aria-haspopup="menu" aria-expanded="false">100%</button>
+          <button id="btn-zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+          <div id="zoom-menu" role="menu" hidden>
+            <button data-zoom="fit" role="menuitem">Fit all <kbd>F</kbd></button>
+            <button data-zoom="fit-sel" role="menuitem">Fit selected <kbd>⇧F</kbd></button>
+            <hr>
+            <button data-zoom="25" role="menuitem">25%</button>
+            <button data-zoom="50" role="menuitem">50%</button>
+            <button data-zoom="100" role="menuitem">100% · actual size <kbd>0</kbd></button>
+            <button data-zoom="200" role="menuitem">200%</button>
+            <button data-zoom="400" role="menuitem">400%</button>
+          </div>
+        </div>
         <button id="btn-measure" title="Measure distances (M). Snaps to part centres; hold Shift for 15° steps. Esc to finish.">📏 Measure</button>
         <label><input type="checkbox" id="opt-pitch" checked> Pitch circles</label>
         <label><input type="checkbox" id="opt-labels" checked> Labels</label>
@@ -83,7 +97,8 @@
 
       <p class="hint">
         Drag a gear to move it — meshed gears orbit their parent, driver gears move the whole train
-        (hold Shift to snap to 1&nbsp;mm). Drag empty space to pan, scroll to zoom.
+        (hold Shift to snap to 1&nbsp;mm). Drag empty space to pan; scroll or pinch to zoom,
+        or use the zoom menu (<kbd>+</kbd> / <kbd>−</kbd>).
         Measure with <kbd>M</kbd>: drag between two points (snaps to centres, Shift for 15° steps), <kbd>Esc</kbd> to finish.
         Keys: <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo,
         <kbd>Space</kbd> play/pause, <kbd>Del</kbd> delete, <kbd>F</kbd> fit.

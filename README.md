@@ -40,13 +40,15 @@ Your work is saved automatically in the browser's local storage. Use **Save .jso
 | --- | --- |
 | Move a driver gear (and its whole train) | drag it; hold Shift to snap to 1 mm |
 | Move a meshed gear or rack around its parent | drag it |
-| Pan / zoom | drag empty space / mouse wheel |
+| Pan | drag empty space (one finger on touch screens) |
+| Zoom | pinch, mouse wheel or trackpad pinch, or the **− / % / +** control in the toolbar |
+| Zoom menu | tap the percentage: fit all, fit selected, 25–400% (100% ≈ actual size on screen) |
+| Zoom keys | <kbd>+</kbd> / <kbd>−</kbd>, <kbd>0</kbd> for 100%, <kbd>F</kbd> fit all, <kbd>Shift</kbd>+<kbd>F</kbd> fit selected |
 | Measure | <kbd>M</kbd> or the 📏 button, then drag; hold Shift for 15° steps; <kbd>Esc</kbd> to finish |
 | Lock a part in place | tick **Lock position** in the sidebar |
 | Undo / redo | <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> (or <kbd>Ctrl</kbd>+<kbd>Y</kbd>) |
 | Play / pause | <kbd>Space</kbd> |
 | Delete selected (and the parts attached to it) | <kbd>Del</kbd> |
-| Fit view | <kbd>F</kbd> |
 
 Hover over any setting in the sidebar for a short explanation.
 
