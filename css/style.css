@@ -11,6 +11,7 @@
   --grid: rgba(255, 255, 255, 0.07);
   --grid-major: rgba(255, 255, 255, 0.16);
   --pitch: rgba(255, 255, 255, 0.45);
+  --measure: #ffd166;
   --input-bg: rgba(6, 22, 42, 0.55);
   --glass: rgba(13, 38, 68, 0.62);
   --glass-border: rgba(160, 205, 255, 0.18);
@@ -75,6 +76,7 @@ html, body {
   border-radius: 6px;
   padding: 4px 8px;
 }
+#toolbar button.active { border-color: var(--measure); color: var(--measure); }
 #speed-val { font-variant-numeric: tabular-nums; min-width: 3.5em; }
 
 #status {
@@ -91,6 +93,23 @@ html, body {
 }
 
 /* Frosted-glass sidebar floating over the design space */
+#toast {
+  position: absolute;
+  left: 12px;
+  right: calc(var(--panel-w) + var(--panel-gap) * 2);
+  bottom: 72px;
+  width: fit-content;
+  max-width: 520px;
+  margin: 0 auto;
+  background: rgba(5, 15, 30, 0.9);
+  color: #fff;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  pointer-events: none;
+}
+
 #panel {
   position: absolute;
   top: var(--panel-gap);
@@ -186,7 +205,7 @@ kbd { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-
   /* Stack on narrow screens: canvas on top, panel below. */
   #app { height: auto; }
   #stage { position: relative; height: 60vh; }
-  #toolbar, #status { right: 12px; }
+  #toolbar, #status, #toast { right: 12px; }
   #panel { position: static; width: auto; margin: 12px; }
 }
 

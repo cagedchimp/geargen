@@ -19,10 +19,12 @@
           <span id="speed-val">1.00×</span>
         </label>
         <button id="btn-fit" title="Fit view (F)">Fit</button>
+        <button id="btn-measure" title="Measure distances (M). Snaps to part centres; hold Shift for 15° steps. Esc to finish.">📏 Measure</button>
         <label><input type="checkbox" id="opt-pitch" checked> Pitch circles</label>
         <label><input type="checkbox" id="opt-labels" checked> Labels</label>
       </div>
       <div id="status" hidden></div>
+      <div id="toast" role="status" hidden></div>
     </main>
 
     <aside id="panel">
@@ -82,6 +84,7 @@
       <p class="hint">
         Drag a gear to move it — meshed gears orbit their parent, driver gears move the whole train
         (hold Shift to snap to 1&nbsp;mm). Drag empty space to pan, scroll to zoom.
+        Measure with <kbd>M</kbd>: drag between two points (snaps to centres, Shift for 15° steps), <kbd>Esc</kbd> to finish.
         Keys: <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo,
         <kbd>Space</kbd> play/pause, <kbd>Del</kbd> delete, <kbd>F</kbd> fit.
         Hover a setting for an explanation.

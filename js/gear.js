@@ -18,6 +18,8 @@
   const clearanceOf = (g) => num(g.clearance, 0.25);
   // Profile shift is supported on external gears only.
   const shiftOf = (g) => (isRack(g) || g.internal ? 0 : num(g.shift, 0));
+  // Tip shortening (× module) that restores clearance for shifted pairs; see tipReduction().
+  const tipCutOf = (g) => (isRack(g) ? 0 : Math.max(num(g.tipCut, 0), 0));
 
   /** Inverse of the involute function (Newton's method). */
   function invInverse(v) {
@@ -51,12 +53,12 @@
       const rf = r + (1 + c) * m;
       return {
         r, rb, alpha, rf,
-        ra: Math.max(r - m, rb * (1 + 1e-9)),
+        ra: Math.max(r - m + tipCutOf(g) * m, rb * (1 + 1e-9)),
         outer: rf + Math.max(num(g.rimWidth, 0), m),
       };
     }
     const x = shiftOf(g);
-    const ra = r + (1 + x) * m;
+    const ra = r + (1 + x - tipCutOf(g)) * m;
     return { r, rb, alpha, ra, rf: Math.max(r - (1 + c - x) * m, m * 0.5), outer: ra };
   }
 
@@ -300,17 +302,76 @@
     if (p.internal || c.internal) {
       const [ring, pin] = p.internal ? [p, c] : [c, p];
       const dz = ring.teeth - pin.teeth;
-      if (dz <= 0) return { a: (m * dz) / 2, alphaW: alpha };
+      if (dz <= 0 || shiftOf(pin) === 0) return { a: (m * dz) / 2, alphaW: alpha };
       const alphaW = invInverse((2 * Math.tan(alpha) * -shiftOf(pin)) / dz + inv(alpha));
       return { a: ((m * dz) / 2) * Math.cos(alpha) / Math.cos(alphaW), alphaW };
     }
     const zs = p.teeth + c.teeth;
+    if (shiftOf(p) + shiftOf(c) === 0) return { a: (m * zs) / 2, alphaW: alpha };
     const alphaW = invInverse((2 * Math.tan(alpha) * (shiftOf(p) + shiftOf(c))) / zs + inv(alpha));
     return { a: ((m * zs) / 2) * Math.cos(alpha) / Math.cos(alphaW), alphaW };
   }
 
   function centerDistance(p, c) {
     return meshGeometry(p, c).a;
+  }
+
+  /**
+   * How much (× module) to shorten both tips of a shifted pair so the root clearance stays
+   * at its set value. Shifting moves the teeth outwards by (x1 + x2)·m, but the centre
+   * distance only grows by (a' − a), so the tips would otherwise dig into the opposite roots.
+   * Returns 0 when no shortening is needed.
+   */
+  function tipReduction(p, c) {
+    if (isRack(p) || isRack(c) || (p.internal && c.internal)) return 0;
+    const m = p.module;
+    const { a } = meshGeometry(p, c);
+    let k;
+    if (p.internal || c.internal) {
+      const [ring, pin] = p.internal ? [p, c] : [c, p];
+      if (ring.teeth <= pin.teeth) return 0;
+      k = shiftOf(pin) - shiftOf(ring) - ((m * (ring.teeth - pin.teeth)) / 2 - a) / m;
+    } else {
+      k = shiftOf(p) + shiftOf(c) - (a - (m * (p.teeth + c.teeth)) / 2) / m;
+    }
+    return k > 1e-9 ? k : 0;
+  }
+
+  const wrap = (a, n) => ((a % n) + n) % n;
+
+  /**
+   * Where a meshed child sits relative to its parent's centre, and how it moves.
+   * th: position angle of the child around the parent; phiP / omegaP: parent angle and speed.
+   * Gears get { dx, dy, phi, omega }; racks get { dx, dy, phi, omega: 0, v } (v = slide speed).
+   */
+  function childPose(p, c, th, phiP, omegaP) {
+    if (isRack(c)) {
+      // The rack's reference line is tangent to the gear and slides at the pitch-line speed.
+      // A finite rack can't travel forever, so it jumps back by whole pitches to stay in mesh.
+      const d = dims(c);
+      const a = centerDistance(p, c);
+      const rp = pitchRadius(p);
+      const nx = Math.cos(th), ny = Math.sin(th);
+      const span = Math.max(1, c.teeth - 6) * d.p;
+      const o = wrap(rp * (phiP - th) + (c.teeth * d.p) / 2 + span / 2, span) - span / 2;
+      return { dx: a * nx - o * ny, dy: a * ny + o * nx, phi: th + Math.PI / 2, omega: 0, v: omegaP * rp };
+    }
+    const dist = centerDistance(p, c);
+    const internalPair = p.internal || c.internal;
+    const k = internalPair ? 1 : -1;
+    const ratio = p.teeth / c.teeth;
+    // Contact direction as seen from each gear's centre.
+    let psiP, psiC;
+    if (!internalPair) { psiP = th; psiC = th + Math.PI; }
+    else if (p.internal) { psiP = psiC = th; }
+    else { psiP = psiC = th + Math.PI; }
+    // Parent tooth at contact <=> child gap at contact.
+    return {
+      dx: dist * Math.cos(th),
+      dy: dist * Math.sin(th),
+      phi: psiC + Math.PI / c.teeth + k * (phiP - psiP) * ratio,
+      omega: k * omegaP * ratio,
+    };
   }
 
   /** Transverse contact ratio of a meshing pair (parent, child). */
@@ -450,7 +511,7 @@
   }
 
   global.GearGeom = {
-    dims, gearPaths, pitchRadius, centerDistance, meshGeometry, contactRatio, minShift,
+    dims, gearPaths, pitchRadius, centerDistance, meshGeometry, contactRatio, minShift, tipReduction, childPose,
     isRack, transformPts, svgPathData, dxf, stl,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

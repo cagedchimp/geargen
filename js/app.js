@@ -30,6 +30,8 @@
     rimWidth: 8,
     rackHeight: 6, // backing below the tooth roots
     thickness: 8, // face width, used for STL
+    locked: false, // position lock: can't be dragged or deleted
+    tipCut: 0, // derived: tip shortening for shifted pairs (× module), recomputed on every change
     parent: null,
     relation: null, // 'mesh' | 'axle'
     angle: 0, // position angle around parent (mesh)
@@ -40,7 +42,7 @@
   };
   const GEOM_KEYS = ['type', 'teeth', 'module', 'pressureAngle', 'backlash', 'clearance', 'fillet', 'shift', 'bore',
     'boreType', 'keyWidth', 'keyDepth', 'flatDepth', 'spokes', 'hubDiameter', 'rimThickness', 'spokeWidth',
-    'internal', 'rimWidth', 'rackHeight'];
+    'internal', 'rimWidth', 'rackHeight', 'tipCut'];
 
   const $ = (id) => document.getElementById(id);
   const canvas = $('canvas');
@@ -57,6 +59,7 @@
   let insetR = 0; // canvas width covered by the floating panel
   let solved = new Map();
   const pathCache = new Map();
+  const measure = { on: false, a: null, b: null, dragging: false };
 
   const isRack = (g) => g.type === 'rack';
   const isExternal = (g) => !isRack(g) && !g.internal;
@@ -97,6 +100,29 @@
       }
     }
     return out;
+  }
+
+  /** The part plus everything attached to it (moves and is deleted with it). */
+  function subtree(g) {
+    const out = [g];
+    for (let i = 0; i < out.length; i++) out.push(...childrenOf(out[i].id));
+    return out;
+  }
+
+  /** Why moving/deleting this part (and what hangs off it) is blocked, or null. */
+  function lockReason(g, verb) {
+    if (g.locked) return `${g.name} is locked — untick “Lock position” to ${verb} it.`;
+    const l = subtree(g).find((x) => x.locked);
+    return l ? `Can't ${verb} ${g.name}: ${l.name}, which is attached to it, is locked.` : null;
+  }
+
+  let toastTimer = null;
+  function toast(msg) {
+    const el = $('toast');
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 3000);
   }
 
   function persist() {
@@ -167,8 +193,6 @@
 
   // ---------------------------------------------------------------- kinematics
 
-  const mod = (a, n) => ((a % n) + n) % n;
-
   function solve(t) {
     const out = new Map();
     const map = new Map(state.gears.map((g) => [g.id, g]));
@@ -184,44 +208,16 @@
         visiting.add(g.id);
         const ps = get(p);
         visiting.delete(g.id);
-        const th = g.angle;
         if (g.relation === 'axle') {
           res = { x: ps.x, y: ps.y, omega: ps.omega, phi: ps.phi + g.phase * DEG, plane: ps.plane + 1, driver: ps.driver };
-        } else if (isRack(g)) {
-          // The rack's reference line is tangent to the gear; it slides at the pitch-line speed.
-          // A finite rack can't travel forever, so it jumps back by whole pitches to stay in mesh.
-          const d = Geom.dims(g);
-          const a = Geom.centerDistance(p, g);
-          const rp = Geom.pitchRadius(p);
-          const nx = Math.cos(th), ny = Math.sin(th);
-          const span = Math.max(1, g.teeth - 6) * d.p;
-          const o = mod(rp * (ps.phi - th) + (g.teeth * d.p) / 2 + span / 2, span) - span / 2;
-          res = {
-            x: ps.x + a * nx - o * ny,
-            y: ps.y + a * ny + o * nx,
-            omega: 0,
-            v: ps.omega * rp,
-            phi: th + Math.PI / 2,
-            plane: ps.plane,
-            driver: ps.driver,
-          };
         } else {
-          const dist = Geom.centerDistance(p, g);
-          const internalPair = p.internal || g.internal;
-          const k = internalPair ? 1 : -1;
-          const ratio = p.teeth / g.teeth;
-          // Contact direction as seen from each gear's centre.
-          let psiP, psiC;
-          if (!internalPair) { psiP = th; psiC = th + Math.PI; }
-          else if (p.internal) { psiP = psiC = th; }
-          else { psiP = psiC = th + Math.PI; }
-          // Parent tooth at contact <=> child gap at contact.
-          const phi = psiC + Math.PI / g.teeth + k * (ps.phi - psiP) * ratio;
+          const pose = Geom.childPose(p, g, g.angle, ps.phi, ps.omega);
           res = {
-            x: ps.x + dist * Math.cos(th),
-            y: ps.y + dist * Math.sin(th),
-            omega: k * ps.omega * ratio,
-            phi,
+            x: ps.x + pose.dx,
+            y: ps.y + pose.dy,
+            omega: pose.omega,
+            v: pose.v,
+            phi: pose.phi,
             plane: ps.plane,
             driver: ps.driver,
           };
@@ -436,6 +432,50 @@
       }
       ctx.textAlign = 'start';
     }
+
+    drawMeasure();
+  }
+
+  function drawMeasure() {
+    const { a, b } = measure;
+    if (!measure.on || !a || !b) return;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    const [ax, ay] = w2s(a.x, a.y), [bx, by] = w2s(b.x, b.y);
+    const color = cssVar('--measure');
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+    // End ticks, perpendicular to the line
+    const sl = Math.hypot(bx - ax, by - ay) || 1;
+    const px = (-(by - ay) / sl) * 7, py = ((bx - ax) / sl) * 7;
+    for (const [x, y] of [[ax, ay], [bx, by]]) { ctx.moveTo(x - px, y - py); ctx.lineTo(x + px, y + py); }
+    ctx.stroke();
+    for (const [pt, x, y] of [[a, ax, ay], [b, bx, by]]) {
+      if (!pt.snapped) continue;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, TAU);
+      ctx.stroke();
+    }
+    if (len > 1e-9) {
+      // Angle with Y pointing up, like a drawing.
+      const ang = Math.atan2(-dy, dx) / DEG;
+      const lines = [`${fmt(len, 2)} mm`, `Δx ${fmt(dx, 2)}  Δy ${fmt(-dy, 2)}  ${fmt(ang, 1)}°`];
+      ctx.font = '600 13px system-ui, sans-serif';
+      const w = Math.max(...lines.map((t) => ctx.measureText(t).width)) + 14;
+      const mx = (ax + bx) / 2 + 10, my = (ay + by) / 2 - 10;
+      ctx.fillStyle = 'rgba(5, 15, 30, 0.85)';
+      ctx.fillRect(mx, my - 30, w, 38);
+      ctx.fillStyle = color;
+      ctx.fillText(lines[0], mx + 7, my - 13);
+      ctx.font = '11px system-ui, sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(lines[1], mx + 7, my + 2);
+    }
+    ctx.restore();
   }
 
   function frame(now) {
@@ -449,8 +489,24 @@
 
   // ---------------------------------------------------------------- editing
 
+  /** Shorten tips of profile-shifted gears so every mesh keeps its root clearance. */
+  function applyTipCuts() {
+    for (const g of state.gears) g.tipCut = 0;
+    for (const g of state.gears) {
+      if (g.relation !== 'mesh') continue;
+      const p = byId(g.parent);
+      if (!p) continue;
+      const k = Geom.tipReduction(p, g);
+      if (k > 0) {
+        g.tipCut = Math.max(g.tipCut, k);
+        p.tipCut = Math.max(p.tipCut, k);
+      }
+    }
+  }
+
   function changed(o) {
     o = o || {};
+    applyTipCuts();
     solved = solve(simTime);
     persist();
     if (!o.noRecord) record(o.coalesce);
@@ -526,6 +582,8 @@
   function deleteSelected() {
     const g = selected();
     if (!g) return;
+    const why = lockReason(g, 'delete');
+    if (why) { toast(why); return; }
     const doomed = new Set([g.id]);
     let grew = true;
     while (grew) {
@@ -597,10 +655,12 @@
     { key: 'thickness', label: 'Thickness (mm, for STL)', type: 'number', min: 0.1, step: 0.5 },
 
     { section: 'Motion & position' },
+    { key: 'locked', label: 'Lock position', type: 'checkbox',
+      hint: 'Stops this part being dragged or deleted by accident. Anything that would move it is blocked too.' },
     { key: 'rpm', label: 'Speed (rpm, + = clockwise)', type: 'number', step: 1, show: (g) => g.parent == null },
-    { key: 'x', label: 'Centre X (mm)', type: 'number', step: 1, show: (g) => g.parent == null },
-    { key: 'y', label: 'Centre Y (mm)', type: 'number', step: 1, show: (g) => g.parent == null },
-    { key: 'angle', label: 'Position around parent (°)', type: 'number', step: 1, show: (g) => g.relation === 'mesh',
+    { key: 'x', label: 'Centre X (mm)', type: 'number', step: 1, show: (g) => g.parent == null, lockable: true },
+    { key: 'y', label: 'Centre Y (mm)', type: 'number', step: 1, show: (g) => g.parent == null, lockable: true },
+    { key: 'angle', label: 'Position around parent (°)', type: 'number', step: 1, show: (g) => g.relation === 'mesh', lockable: true,
       get: (g) => +(((g.angle / DEG) % 360 + 360) % 360).toFixed(2), set: (g, v) => { g.angle = v * DEG; } },
     { key: 'phase', label: 'Phase offset (°)', type: 'number', step: 1, show: (g) => g.relation !== 'mesh' },
   ];
@@ -644,6 +704,7 @@
         for (const a of ['min', 'max', 'step']) if (f[a] != null) input[a] = f[a];
       }
       input.dataset.key = f.key;
+      if (f.lockable && g.locked) input.disabled = true;
       const evt = f.type === 'checkbox' || f.type === 'select' || f.rerender ? 'change' : 'input';
       input.addEventListener(evt, () => onField(f, input));
       if (f.type === 'checkbox') { row.appendChild(input); row.appendChild(span); }
@@ -710,7 +771,7 @@
       li.appendChild(sw);
       const rel = g.relation === 'axle' ? ' ⊙' : g.relation === 'mesh' ? '' : ' ★';
       const kind = isRack(g) ? ' rack' : g.internal ? ' ring' : '';
-      li.appendChild(document.createTextNode(`${g.name} — ${g.teeth}T${kind}${rel}`));
+      li.appendChild(document.createTextNode(`${g.name} — ${g.teeth}T${kind}${rel}${g.locked ? ' 🔒' : ''}`));
       li.addEventListener('click', () => select(g.id));
       ul.appendChild(li);
     }
@@ -758,8 +819,9 @@
       rows.push(
         ['Circular pitch', fmt(Math.PI * g.module) + ' mm'],
         ['Tooth height', fmt(Math.abs(d.ra - d.rf)) + ' mm'],
-        ['Speed', `${fmt(Math.abs(rpm))} rpm ${rpm >= 0 ? 'CW' : 'CCW'}`],
       );
+      if (g.tipCut > 0) rows.push(['Tip shortened (keeps clearance)', fmt(g.tipCut * g.module) + ' mm']);
+      rows.push(['Speed', `${fmt(Math.abs(rpm))} rpm ${rpm >= 0 ? 'CW' : 'CCW'}`]);
       if (driver && driver.id !== g.id && driver.rpm !== 0) {
         rows.push([`Ratio to ${driver.name}`, `${fmt(Math.abs(driver.rpm / rpm), 4)} : 1`]);
       }
@@ -821,10 +883,48 @@
 
   let drag = null;
 
+  const pointerPos = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    return [e.clientX - rect.left, e.clientY - rect.top];
+  };
+
+  /** Measuring snaps to part centres within a few pixels. */
+  function measurePoint(sx, sy, from, angleSnap) {
+    let best = null, bestD = 10;
+    for (const g of state.gears) {
+      const s = solved.get(g.id);
+      const [px, py] = w2s(s.x, s.y);
+      const dd = Math.hypot(px - sx, py - sy);
+      if (dd < bestD) { bestD = dd; best = [s.x, s.y]; }
+    }
+    if (best) return { x: best[0], y: best[1], snapped: true };
+    let [wx, wy] = s2w(sx, sy);
+    if (angleSnap && from) {
+      const len = Math.hypot(wx - from.x, wy - from.y);
+      const ang = Math.round(Math.atan2(wy - from.y, wx - from.x) / (15 * DEG)) * 15 * DEG;
+      wx = from.x + len * Math.cos(ang);
+      wy = from.y + len * Math.sin(ang);
+    }
+    return { x: wx, y: wy, snapped: false };
+  }
+
+  function setMeasure(on) {
+    measure.on = on;
+    measure.a = measure.b = null;
+    measure.dragging = false;
+    $('btn-measure').classList.toggle('active', on);
+    canvas.style.cursor = on ? 'crosshair' : '';
+  }
+
   canvas.addEventListener('pointerdown', (e) => {
     canvas.setPointerCapture(e.pointerId);
-    const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const [sx, sy] = pointerPos(e);
+    if (measure.on) {
+      measure.a = measurePoint(sx, sy);
+      measure.b = measure.a;
+      measure.dragging = true;
+      return;
+    }
     const hit = hitTest(sx, sy);
     const [wx, wy] = s2w(sx, sy);
     if (hit) {
@@ -832,6 +932,11 @@
       // Same-axle gears move with their parent.
       let target = hit;
       while (target.relation === 'axle') target = byId(target.parent);
+      const why = lockReason(target, 'move');
+      if (why) {
+        drag = { mode: 'blocked', why, sx, sy };
+        return;
+      }
       drag = { mode: 'gear', target, wx, wy, moved: false };
       if (target.relation === 'mesh') {
         const ps = solved.get(target.parent);
@@ -845,10 +950,26 @@
     }
   });
 
+  function hoverCursor(sx, sy) {
+    if (measure.on) return 'crosshair';
+    const hit = hitTest(sx, sy);
+    if (!hit) return '';
+    let target = hit;
+    while (target.relation === 'axle') target = byId(target.parent);
+    return lockReason(target, 'move') ? 'not-allowed' : 'move';
+  }
+
   canvas.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const [sx, sy] = pointerPos(e);
+    if (measure.on) {
+      if (measure.dragging) measure.b = measurePoint(sx, sy, measure.a, e.shiftKey);
+      return;
+    }
+    if (!drag) { canvas.style.cursor = hoverCursor(sx, sy); return; }
+    if (drag.mode === 'blocked') {
+      if (!drag.warned && Math.hypot(sx - drag.sx, sy - drag.sy) > 4) { drag.warned = true; toast(drag.why); }
+      return;
+    }
     drag.moved = true;
     if (drag.mode === 'pan') {
       view.x = drag.vx - (sx - drag.sx) / view.scale;
@@ -869,6 +990,10 @@
   });
 
   function endDrag() {
+    if (measure.on) {
+      measure.dragging = false;
+      return;
+    }
     if (!drag) return;
     if (drag.mode === 'pan' && !drag.moved) select(null);
     else if (drag.mode === 'gear' && drag.moved) changed();
@@ -1051,6 +1176,7 @@ ${body.join('\n')}
     $('speed-val').textContent = speed.toFixed(2) + '×';
   });
   $('btn-fit').addEventListener('click', fit);
+  $('btn-measure').addEventListener('click', () => setMeasure(!measure.on));
   $('opt-pitch').addEventListener('change', (e) => { opts.pitch = e.target.checked; });
   $('opt-labels').addEventListener('change', (e) => { opts.labels = e.target.checked; });
   $('btn-add-free').addEventListener('click', addFreeGear);
@@ -1097,6 +1223,8 @@ ${body.join('\n')}
     else if (e.code === 'Space') { e.preventDefault(); setRunning(!running); }
     else if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
     else if (key === 'f') fit();
+    else if (key === 'm') setMeasure(!measure.on);
+    else if (e.key === 'Escape' && measure.on) setMeasure(false);
   });
 
   const ro = new ResizeObserver(resize);

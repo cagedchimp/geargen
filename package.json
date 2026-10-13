@@ -1,0 +1,8 @@
+{
+  "name": "geargen",
+  "private": true,
+  "description": "Browser-based involute gear designer",
+  "scripts": {
+    "test": "node --test"
+  }
+}
