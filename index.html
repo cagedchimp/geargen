@@ -11,6 +11,8 @@
     <main id="stage">
       <canvas id="canvas"></canvas>
       <div id="toolbar">
+        <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
+        <button id="btn-redo" title="Redo (Ctrl+Shift+Z)" disabled>↷ Redo</button>
         <button id="btn-play">Pause</button>
         <label class="speed">Speed
           <input id="speed" type="range" min="0" max="5" step="0.05" value="1">
@@ -39,6 +41,7 @@
         <div class="row">
           <button id="btn-add-mesh">+ Meshing gear</button>
           <button id="btn-add-axle">+ Gear on same axle</button>
+          <button id="btn-add-rack">+ Rack</button>
         </div>
         <div class="row">
           <button id="btn-detach">Make driver</button>
@@ -52,8 +55,18 @@
         <div class="row">
           <button id="btn-svg">Selected → SVG</button>
           <button id="btn-dxf">Selected → DXF</button>
+          <button id="btn-stl" title="3D model extruded to the part's thickness">Selected → STL</button>
           <button id="btn-layout-svg">Whole layout → SVG</button>
         </div>
+      </section>
+
+      <section>
+        <h2>Print (true scale)</h2>
+        <div class="row">
+          <button id="btn-print-sel">Print selected 1:1</button>
+          <button id="btn-print-layout">Print layout 1:1</button>
+        </div>
+        <p class="legend">Use “Save as PDF” in the print dialog for a PDF. Set scaling to 100%.</p>
       </section>
 
       <section>
@@ -69,12 +82,17 @@
       <p class="hint">
         Drag a gear to move it — meshed gears orbit their parent, driver gears move the whole train
         (hold Shift to snap to 1&nbsp;mm). Drag empty space to pan, scroll to zoom.
-        Keys: <kbd>Space</kbd> play/pause, <kbd>Del</kbd> delete, <kbd>F</kbd> fit.
+        Keys: <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo,
+        <kbd>Space</kbd> play/pause, <kbd>Del</kbd> delete, <kbd>F</kbd> fit.
+        Hover a setting for an explanation.
         Work is auto-saved in this browser.
       </p>
     </aside>
   </div>
 
+  <div id="print-area"></div>
+
+  <script src="js/vendor/earcut.js"></script>
   <script src="js/gear.js"></script>
   <script src="js/app.js"></script>
 </body>

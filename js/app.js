@@ -7,6 +7,41 @@
   const DEG = Math.PI / 180;
   const PALETTE = ['#e8a33d', '#4c9be8', '#5cc08a', '#d9634c', '#a77fe0', '#e0c341', '#45bfc4', '#e67fb0'];
 
+  // Every gear/rack carries all of these; older saved files are filled in on load.
+  const DEFAULTS = {
+    type: 'gear', // 'gear' | 'rack'
+    teeth: 20,
+    module: 2,
+    pressureAngle: 20,
+    backlash: 0.1,
+    clearance: 0.25, // × module
+    fillet: 0.3, // root fillet radius, × module
+    shift: 0, // profile shift coefficient (external gears)
+    bore: 5,
+    boreType: 'round', // 'round' | 'keyway' | 'dflat'
+    keyWidth: 2,
+    keyDepth: 1,
+    flatDepth: 0.5,
+    spokes: 0,
+    hubDiameter: 14,
+    rimThickness: 4,
+    spokeWidth: 4,
+    internal: false,
+    rimWidth: 8,
+    rackHeight: 6, // backing below the tooth roots
+    thickness: 8, // face width, used for STL
+    parent: null,
+    relation: null, // 'mesh' | 'axle'
+    angle: 0, // position angle around parent (mesh)
+    x: 0,
+    y: 0,
+    rpm: 10, // driver gears only
+    phase: 0, // driver / same-axle gears only
+  };
+  const GEOM_KEYS = ['type', 'teeth', 'module', 'pressureAngle', 'backlash', 'clearance', 'fillet', 'shift', 'bore',
+    'boreType', 'keyWidth', 'keyDepth', 'flatDepth', 'spokes', 'hubDiameter', 'rimThickness', 'spokeWidth',
+    'internal', 'rimWidth', 'rackHeight'];
+
   const $ = (id) => document.getElementById(id);
   const canvas = $('canvas');
   const ctx = canvas.getContext('2d');
@@ -23,29 +58,16 @@
   let solved = new Map();
   const pathCache = new Map();
 
+  const isRack = (g) => g.type === 'rack';
+  const isExternal = (g) => !isRack(g) && !g.internal;
+
   // ---------------------------------------------------------------- state
 
   function makeGear(props) {
     const id = state.nextId++;
-    return Object.assign({
-      id,
-      name: 'Gear ' + id,
-      teeth: 20,
-      module: 2,
-      pressureAngle: 20,
-      backlash: 0.1,
-      bore: 5,
-      internal: false,
-      rimWidth: 8,
-      color: PALETTE[(id - 1) % PALETTE.length],
-      parent: null,
-      relation: null, // 'mesh' | 'axle'
-      angle: 0, // position angle around parent (mesh)
-      x: 0,
-      y: 0,
-      rpm: 10, // driver gears only
-      phase: 0, // driver / same-axle gears only
-    }, props);
+    const g = Object.assign({}, DEFAULTS, { id, color: PALETTE[(id - 1) % PALETTE.length] }, props);
+    if (!g.name) g.name = (isRack(g) ? 'Rack ' : 'Gear ') + id;
+    return g;
   }
 
   function defaultState() {
@@ -85,15 +107,67 @@
     if (!obj || !Array.isArray(obj.gears)) throw new Error('Not a GearGen file');
     const ids = new Set(obj.gears.map((g) => g.id));
     state = {
-      gears: obj.gears.map((g) => Object.assign({}, g)),
+      gears: obj.gears.map((g) => Object.assign({}, DEFAULTS, g)),
       nextId: Math.max(obj.nextId || 1, ...obj.gears.map((g) => g.id + 1), 1),
       selected: ids.has(obj.selected) ? obj.selected : (obj.gears[0] ? obj.gears[0].id : null),
     };
-    // Make sure every gear's parent is defined before it (draw/solve order relies on it).
     state.gears.forEach((g) => { if (g.parent != null && !ids.has(g.parent)) { g.parent = null; g.relation = null; } });
   }
 
+  // ---------------------------------------------------------------- undo / redo
+
+  const history = { stack: [], index: -1, lastKey: null, lastTime: 0 };
+  const snapshot = () => JSON.stringify({ gears: state.gears, nextId: state.nextId });
+
+  /** Record the current state. Consecutive edits of the same field within a second merge into one step. */
+  function record(coalesceKey) {
+    const snap = snapshot();
+    if (history.stack[history.index] === snap) return;
+    const now = Date.now();
+    if (coalesceKey && coalesceKey === history.lastKey && now - history.lastTime < 1000 && history.index > 0) {
+      history.stack[history.index] = snap;
+    } else {
+      history.stack.length = history.index + 1;
+      history.stack.push(snap);
+      if (history.stack.length > 200) history.stack.shift();
+      history.index = history.stack.length - 1;
+    }
+    history.lastKey = coalesceKey || null;
+    history.lastTime = now;
+    updateUndoButtons();
+  }
+
+  function restore(snap) {
+    const obj = JSON.parse(snap);
+    const sel = state.selected;
+    state.gears = obj.gears;
+    state.nextId = obj.nextId;
+    state.selected = byId(sel) ? sel : (state.gears[0] ? state.gears[0].id : null);
+    history.lastKey = null;
+    changed({ noRecord: true });
+    updateUndoButtons();
+  }
+
+  function undo() {
+    if (history.index <= 0) return;
+    history.index--;
+    restore(history.stack[history.index]);
+  }
+
+  function redo() {
+    if (history.index >= history.stack.length - 1) return;
+    history.index++;
+    restore(history.stack[history.index]);
+  }
+
+  function updateUndoButtons() {
+    $('btn-undo').disabled = history.index <= 0;
+    $('btn-redo').disabled = history.index >= history.stack.length - 1;
+  }
+
   // ---------------------------------------------------------------- kinematics
+
+  const mod = (a, n) => ((a % n) + n) % n;
 
   function solve(t) {
     const out = new Map();
@@ -104,17 +178,35 @@
       let res;
       const p = g.parent != null ? map.get(g.parent) : null;
       if (!p || visiting.has(g.id)) {
-        const w = (g.rpm * TAU) / 60;
+        const w = isRack(g) ? 0 : (g.rpm * TAU) / 60;
         res = { x: g.x, y: g.y, omega: w, phi: g.phase * DEG + w * t, plane: 0, driver: g.id };
       } else {
         visiting.add(g.id);
         const ps = get(p);
         visiting.delete(g.id);
+        const th = g.angle;
         if (g.relation === 'axle') {
           res = { x: ps.x, y: ps.y, omega: ps.omega, phi: ps.phi + g.phase * DEG, plane: ps.plane + 1, driver: ps.driver };
+        } else if (isRack(g)) {
+          // The rack's reference line is tangent to the gear; it slides at the pitch-line speed.
+          // A finite rack can't travel forever, so it jumps back by whole pitches to stay in mesh.
+          const d = Geom.dims(g);
+          const a = Geom.centerDistance(p, g);
+          const rp = Geom.pitchRadius(p);
+          const nx = Math.cos(th), ny = Math.sin(th);
+          const span = Math.max(1, g.teeth - 6) * d.p;
+          const o = mod(rp * (ps.phi - th) + (g.teeth * d.p) / 2 + span / 2, span) - span / 2;
+          res = {
+            x: ps.x + a * nx - o * ny,
+            y: ps.y + a * ny + o * nx,
+            omega: 0,
+            v: ps.omega * rp,
+            phi: th + Math.PI / 2,
+            plane: ps.plane,
+            driver: ps.driver,
+          };
         } else {
           const dist = Geom.centerDistance(p, g);
-          const th = g.angle;
           const internalPair = p.internal || g.internal;
           const k = internalPair ? 1 : -1;
           const ratio = p.teeth / g.teeth;
@@ -158,20 +250,22 @@
     return hits;
   }
 
+  // Racks are not collision-checked (their footprint isn't round).
   function overlaps(a, sa, b, sb) {
+    if (isRack(a) || isRack(b)) return false;
     const da = Geom.dims(a), db = Geom.dims(b);
     const dist = Math.hypot(sa.x - sb.x, sa.y - sb.y);
     const eps = 1e-6;
     if (!a.internal && !b.internal) return dist < da.ra + db.ra - eps;
     if (a.internal && b.internal) return dist < da.outer + db.outer - eps && !(dist + db.outer < da.ra || dist + da.outer < db.ra);
-    const [ring, rd, ext, ed] = a.internal ? [a, da, b, db] : [b, db, a, da];
-    void ring; void ext;
+    const [rd, ed] = a.internal ? [da, db] : [db, da];
     return dist + ed.ra > rd.ra + eps && dist - ed.ra < rd.outer - eps;
   }
 
   function warnings() {
     const w = [];
     for (const g of state.gears) {
+      for (const msg of getPath(g).warnings) w.push(`${g.name}: ${msg}.`);
       if (g.relation !== 'mesh') continue;
       const p = byId(g.parent);
       if (!p) continue;
@@ -190,17 +284,17 @@
   // ---------------------------------------------------------------- rendering
 
   function getPath(g) {
-    const key = [g.teeth, g.module, g.pressureAngle, g.backlash, g.bore, g.internal, g.rimWidth].join('|');
+    const key = JSON.stringify(GEOM_KEYS.map((k) => g[k]));
     let entry = pathCache.get(key);
     if (!entry) {
-      const { paths, dims } = Geom.gearPaths(g);
+      const { paths, dims, warnings: warns } = Geom.gearPaths(g);
       const path = new Path2D();
       for (const pts of paths) {
         path.moveTo(pts[0][0], pts[0][1]);
         for (let i = 1; i < pts.length; i++) path.lineTo(pts[i][0], pts[i][1]);
         path.closePath();
       }
-      entry = { path, dims };
+      entry = { path, dims, warnings: warns };
       if (pathCache.size > 200) pathCache.clear();
       pathCache.set(key, entry);
     }
@@ -217,8 +311,8 @@
     const r = canvas.getBoundingClientRect();
     cssW = r.width; cssH = r.height;
     const pr = $('panel').getBoundingClientRect();
-    const overlaps = pr.left < r.right && pr.top < r.bottom && pr.bottom > r.top;
-    insetR = overlaps ? Math.max(0, r.right - pr.left) : 0;
+    const covered = pr.left < r.right && pr.top < r.bottom && pr.bottom > r.top;
+    insetR = covered ? Math.max(0, r.right - pr.left) : 0;
     canvas.width = Math.max(1, Math.round(r.width * dpr));
     canvas.height = Math.max(1, Math.round(r.height * dpr));
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -252,6 +346,12 @@
     ctx.fillText(`grid ${spacing} mm`, 10, cssH - 10);
   }
 
+  function labelText(g, s) {
+    if (isRack(g)) return `${g.teeth}T rack · ${fmt(Math.abs(s.v || 0), 1)} mm/s`;
+    const rpm = (s.omega * 60) / TAU;
+    return `${g.teeth}T · ${fmt(Math.abs(rpm), 2)} rpm ${rpm >= 0 ? '↻' : '↺'}`;
+  }
+
   function draw() {
     ctx.fillStyle = cssVar('--canvas-bg');
     ctx.fillRect(0, 0, cssW, cssH);
@@ -261,6 +361,7 @@
     const order = state.gears.slice().sort((a, b) => solved.get(a.id).plane - solved.get(b.id).plane);
     const sel = state.selected;
     const accent = cssVar('--accent');
+    const pitchColor = cssVar('--pitch');
 
     for (const g of order) {
       const s = solved.get(g.id);
@@ -278,36 +379,45 @@
       ctx.lineWidth = (g.id === sel ? 2.5 : 1) / view.scale;
       ctx.strokeStyle = collisions.has(g.id) ? '#ff3b30' : g.id === sel ? accent : 'rgba(0,0,0,0.55)';
       ctx.stroke(path);
-      // Rotation marker
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.lineWidth = 2 / view.scale;
-      ctx.beginPath();
-      if (g.internal) {
-        ctx.moveTo(dims.rf, 0); ctx.lineTo(dims.outer, 0);
-      } else {
-        ctx.moveTo(Math.max(g.bore / 2, dims.rf * 0.15), 0); ctx.lineTo(dims.rf * 0.8, 0);
+      if (!isRack(g)) {
+        // Rotation marker
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+        ctx.lineWidth = 2 / view.scale;
+        ctx.beginPath();
+        if (g.internal) {
+          ctx.moveTo(dims.rf, 0); ctx.lineTo(dims.outer, 0);
+        } else {
+          ctx.moveTo(Math.max(g.bore / 2, dims.rf * 0.15), 0); ctx.lineTo(dims.rf * 0.8, 0);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
       ctx.restore();
 
       if (opts.pitch) {
         ctx.save();
         ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = cssVar('--pitch');
+        ctx.strokeStyle = pitchColor;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.arc(sx, sy, dims.r * view.scale, 0, TAU);
+        if (isRack(g)) {
+          const hx = (Math.cos(s.phi) * dims.len) / 2, hy = (Math.sin(s.phi) * dims.len) / 2;
+          ctx.moveTo(sx - hx * view.scale, sy - hy * view.scale);
+          ctx.lineTo(sx + hx * view.scale, sy + hy * view.scale);
+        } else {
+          ctx.arc(sx, sy, dims.r * view.scale, 0, TAU);
+        }
         ctx.stroke();
         ctx.restore();
       }
 
-      // Axle
-      ctx.strokeStyle = cssVar('--fg');
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(sx - 5, sy); ctx.lineTo(sx + 5, sy);
-      ctx.moveTo(sx, sy - 5); ctx.lineTo(sx, sy + 5);
-      ctx.stroke();
+      if (!isRack(g)) {
+        ctx.strokeStyle = cssVar('--fg');
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(sx - 5, sy); ctx.lineTo(sx + 5, sy);
+        ctx.moveTo(sx, sy - 5); ctx.lineTo(sx, sy + 5);
+        ctx.stroke();
+      }
     }
 
     if (opts.labels) {
@@ -316,8 +426,7 @@
       for (const g of order) {
         const s = solved.get(g.id);
         const [sx, sy] = w2s(s.x, s.y);
-        const rpm = (s.omega * 60) / TAU;
-        const text = `${g.teeth}T · ${fmt(Math.abs(rpm), 2)} rpm ${rpm >= 0 ? '↻' : '↺'}`;
+        const text = labelText(g, s);
         const yOff = s.plane * 16 + 20;
         const w = ctx.measureText(text).width + 10;
         ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -340,10 +449,12 @@
 
   // ---------------------------------------------------------------- editing
 
-  function changed(opts2) {
+  function changed(o) {
+    o = o || {};
     solved = solve(simTime);
     persist();
-    if (!opts2 || !opts2.keepForm) renderForm();
+    if (!o.noRecord) record(o.coalesce);
+    if (!o.keepForm) renderForm();
     renderList();
     renderInfo();
   }
@@ -371,14 +482,13 @@
     return 0;
   }
 
+  const inherit = (p) => ({ module: p.module, pressureAngle: p.pressureAngle, backlash: p.backlash, clearance: p.clearance, thickness: p.thickness });
+
   function addMeshGear() {
     const p = selected();
-    if (!p) return;
+    if (!p || isRack(p)) return;
     const teeth = p.internal ? Math.max(8, Math.round(p.teeth / 3)) : 20;
-    const g = makeGear({
-      teeth, module: p.module, pressureAngle: p.pressureAngle, backlash: p.backlash,
-      parent: p.id, relation: 'mesh',
-    });
+    const g = makeGear(Object.assign(inherit(p), { teeth, parent: p.id, relation: 'mesh' }));
     g.angle = freeAngleFor(p, g);
     state.gears.push(g);
     select(g.id);
@@ -386,12 +496,23 @@
 
   function addAxleGear() {
     const p = selected();
-    if (!p) return;
-    const g = makeGear({
+    if (!p || isRack(p)) return;
+    const g = makeGear(Object.assign(inherit(p), {
       teeth: Math.max(8, Math.round(p.internal ? p.teeth / 3 : p.teeth / 2)),
-      module: p.module, pressureAngle: p.pressureAngle, backlash: p.backlash,
-      bore: p.internal ? 5 : p.bore, parent: p.id, relation: 'axle',
-    });
+      bore: p.internal ? 5 : p.bore, boreType: p.internal ? 'round' : p.boreType,
+      parent: p.id, relation: 'axle',
+    }));
+    state.gears.push(g);
+    select(g.id);
+  }
+
+  function addRack() {
+    const p = selected();
+    if (!p || !isExternal(p)) return;
+    const g = makeGear(Object.assign(inherit(p), {
+      type: 'rack', teeth: 16, rackHeight: Math.round(3 * p.module * 10) / 10,
+      parent: p.id, relation: 'mesh', angle: Math.PI / 2,
+    }));
     state.gears.push(g);
     select(g.id);
   }
@@ -421,7 +542,7 @@
   /** Make a child gear the driver: detach from its parent at its current position. */
   function detachSelected() {
     const g = selected();
-    if (!g || g.parent == null) return;
+    if (!g || g.parent == null || isRack(g)) return;
     const s = solved.get(g.id);
     g.x = +s.x.toFixed(3);
     g.y = +s.y.toFixed(3);
@@ -434,23 +555,54 @@
 
   // ---------------------------------------------------------------- form
 
+  const hasSpokes = (g) => isExternal(g) && g.spokes >= 2;
   const FIELDS = [
+    { section: 'Basics' },
     { key: 'name', label: 'Name', type: 'text' },
     { key: 'teeth', label: 'Teeth', type: 'number', min: 4, max: 500, step: 1, int: true },
     { key: 'module', label: 'Module (mm)', type: 'number', min: 0.05, max: 100, step: 0.05, mesh: true,
-      hint: 'Meshing gears share the same module.' },
+      hint: 'Tooth size. Meshing parts share the same module.' },
     { key: 'pressureAngle', label: 'Pressure angle (°)', type: 'select', options: [14.5, 20, 25], mesh: true },
-    { key: 'backlash', label: 'Backlash (mm)', type: 'number', min: 0, max: 5, step: 0.01 },
-    { key: 'bore', label: 'Bore Ø (mm)', type: 'number', min: 0, step: 0.5, show: (g) => !g.internal },
-    { key: 'internal', label: 'Internal (ring) gear', type: 'checkbox' },
-    { key: 'rimWidth', label: 'Rim width (mm)', type: 'number', min: 0, step: 0.5, show: (g) => g.internal },
+    { key: 'color', label: 'Colour', type: 'color' },
+
+    { section: 'Tooth form' },
+    { key: 'backlash', label: 'Backlash (mm)', type: 'number', min: 0, max: 5, step: 0.01,
+      hint: 'Total play between meshing teeth; each part is thinned by half of it.' },
+    { key: 'clearance', label: 'Clearance (× module)', type: 'number', min: 0, max: 1, step: 0.05,
+      hint: 'Gap between a tooth tip and the bottom of the opposite tooth space. Standard is 0.25.' },
+    { key: 'fillet', label: 'Root fillet (× module)', type: 'number', min: 0, max: 1, step: 0.05, show: (g) => !isRack(g),
+      hint: 'Radius of the rounded corner at the base of each tooth. Reduced automatically if it does not fit.' },
+    { key: 'shift', label: 'Profile shift (x)', type: 'number', min: -1, max: 1.5, step: 0.05, show: isExternal,
+      hint: 'Moves the tooth profile outwards (+) to strengthen small gears and avoid undercut. Centre distances adjust automatically.' },
+
+    { section: 'Body' },
+    { key: 'internal', label: 'Internal (ring) gear', type: 'checkbox', show: (g) => !isRack(g) },
+    { key: 'rimWidth', label: 'Ring rim width (mm)', type: 'number', min: 0, step: 0.5, show: (g) => !isRack(g) && g.internal },
+    { key: 'rackHeight', label: 'Backing height (mm)', type: 'number', min: 0.5, step: 0.5, show: isRack,
+      hint: 'Solid material below the tooth roots.' },
+    { key: 'bore', label: 'Bore Ø (mm)', type: 'number', min: 0, step: 0.5, show: isExternal },
+    { key: 'boreType', label: 'Bore shape', type: 'select', text: true, rerender: true, show: (g) => isExternal(g) && g.bore > 0,
+      options: [['round', 'Round'], ['keyway', 'Keyway'], ['dflat', 'D-flat']] },
+    { key: 'keyWidth', label: 'Keyway width (mm)', type: 'number', min: 0, step: 0.1,
+      show: (g) => isExternal(g) && g.bore > 0 && g.boreType === 'keyway' },
+    { key: 'keyDepth', label: 'Keyway depth (mm)', type: 'number', min: 0, step: 0.1,
+      show: (g) => isExternal(g) && g.bore > 0 && g.boreType === 'keyway', hint: 'Measured outwards from the bore edge.' },
+    { key: 'flatDepth', label: 'Flat depth (mm)', type: 'number', min: 0, step: 0.1,
+      show: (g) => isExternal(g) && g.bore > 0 && g.boreType === 'dflat', hint: 'How far the flat cuts into the bore circle.' },
+    { key: 'spokes', label: 'Spokes (0 = solid)', type: 'number', min: 0, max: 24, step: 1, int: true, rerender: true, show: isExternal },
+    { key: 'hubDiameter', label: 'Hub Ø (mm)', type: 'number', min: 0, step: 0.5, show: hasSpokes },
+    { key: 'rimThickness', label: 'Rim thickness (mm)', type: 'number', min: 0, step: 0.5, show: hasSpokes,
+      hint: 'Solid material between the cut-outs and the tooth roots.' },
+    { key: 'spokeWidth', label: 'Spoke width (mm)', type: 'number', min: 0.5, step: 0.5, show: hasSpokes },
+    { key: 'thickness', label: 'Thickness (mm, for STL)', type: 'number', min: 0.1, step: 0.5 },
+
+    { section: 'Motion & position' },
     { key: 'rpm', label: 'Speed (rpm, + = clockwise)', type: 'number', step: 1, show: (g) => g.parent == null },
     { key: 'x', label: 'Centre X (mm)', type: 'number', step: 1, show: (g) => g.parent == null },
     { key: 'y', label: 'Centre Y (mm)', type: 'number', step: 1, show: (g) => g.parent == null },
     { key: 'angle', label: 'Position around parent (°)', type: 'number', step: 1, show: (g) => g.relation === 'mesh',
       get: (g) => +(((g.angle / DEG) % 360 + 360) % 360).toFixed(2), set: (g, v) => { g.angle = v * DEG; } },
     { key: 'phase', label: 'Phase offset (°)', type: 'number', step: 1, show: (g) => g.relation !== 'mesh' },
-    { key: 'color', label: 'Colour', type: 'color' },
   ];
 
   function renderForm() {
@@ -459,19 +611,28 @@
     const box = $('props');
     box.innerHTML = '';
     if (!g) return;
+    let pendingSection = null;
     for (const f of FIELDS) {
+      if (f.section) { pendingSection = f.section; continue; }
       if (f.show && !f.show(g)) continue;
+      if (pendingSection) {
+        const h = document.createElement('h3');
+        h.textContent = pendingSection;
+        box.appendChild(h);
+        pendingSection = null;
+      }
       const row = document.createElement('label');
       row.className = 'field' + (f.type === 'checkbox' ? ' check' : '');
       const span = document.createElement('span');
-      span.textContent = f.label;
+      span.textContent = f.key === 'teeth' && isRack(g) ? 'Teeth (sets length)' : f.label;
       let input;
       const value = f.get ? f.get(g) : g[f.key];
       if (f.type === 'select') {
         input = document.createElement('select');
         for (const o of f.options) {
+          const [val, text] = Array.isArray(o) ? o : [o, o];
           const opt = document.createElement('option');
-          opt.value = o; opt.textContent = o;
+          opt.value = val; opt.textContent = text;
           input.appendChild(opt);
         }
         input.value = value;
@@ -483,13 +644,17 @@
         for (const a of ['min', 'max', 'step']) if (f[a] != null) input[a] = f[a];
       }
       input.dataset.key = f.key;
-      input.addEventListener(f.type === 'checkbox' || f.type === 'select' ? 'change' : 'input', () => onField(f, input));
+      const evt = f.type === 'checkbox' || f.type === 'select' || f.rerender ? 'change' : 'input';
+      input.addEventListener(evt, () => onField(f, input));
       if (f.type === 'checkbox') { row.appendChild(input); row.appendChild(span); }
       else { row.appendChild(span); row.appendChild(input); }
       if (f.hint) row.title = f.hint;
       box.appendChild(row);
     }
-    $('btn-detach').hidden = g.parent == null;
+    $('btn-add-mesh').hidden = isRack(g);
+    $('btn-add-axle').hidden = isRack(g);
+    $('btn-add-rack').hidden = !isExternal(g);
+    $('btn-detach').hidden = g.parent == null || isRack(g);
   }
 
   function onField(f, input) {
@@ -497,7 +662,7 @@
     if (!g) return;
     let v;
     if (f.type === 'checkbox') v = input.checked;
-    else if (f.type === 'number' || f.type === 'select') {
+    else if (f.type === 'number' || (f.type === 'select' && !f.text)) {
       v = parseFloat(input.value);
       if (!Number.isFinite(v)) return;
       if (f.int) v = Math.round(v);
@@ -507,8 +672,11 @@
 
     if (f.key === 'internal' && v) {
       const others = meshNeighbors(g);
-      if (others.some((n) => n.internal)) {
-        alert('Two internal gears cannot mesh with each other.');
+      let problem = null;
+      if (others.some((n) => n.internal)) problem = 'Two internal gears cannot mesh with each other.';
+      else if (others.some(isRack)) problem = 'A rack can only mesh with an external gear.';
+      if (problem) {
+        alert(problem);
         input.checked = false;
         return;
       }
@@ -520,14 +688,14 @@
     else if (f.mesh) meshComponent(g).forEach((x) => { x[f.key] = v; });
     else g[f.key] = v;
 
-    changed({ keepForm: f.type !== 'checkbox' });
+    const rerender = f.type === 'checkbox' || f.rerender;
+    changed({ keepForm: !rerender, coalesce: rerender ? null : `field:${g.id}:${f.key}` });
   }
 
   function renderList() {
     const ul = $('gear-list');
     ul.innerHTML = '';
     const depth = (g) => (g.parent == null ? 0 : 1 + depth(byId(g.parent)));
-    // Tree order
     const ordered = [];
     const walk = (parentId) => {
       for (const g of state.gears.filter((x) => x.parent === parentId)) { ordered.push(g); walk(g.id); }
@@ -541,7 +709,8 @@
       sw.style.background = g.color;
       li.appendChild(sw);
       const rel = g.relation === 'axle' ? ' ⊙' : g.relation === 'mesh' ? '' : ' ★';
-      li.appendChild(document.createTextNode(`${g.name} — ${g.teeth}T${g.internal ? ' ring' : ''}${rel}`));
+      const kind = isRack(g) ? ' rack' : g.internal ? ' ring' : '';
+      li.appendChild(document.createTextNode(`${g.name} — ${g.teeth}T${kind}${rel}`));
       li.addEventListener('click', () => select(g.id));
       ul.appendChild(li);
     }
@@ -561,38 +730,63 @@
     if (!g) return;
     const d = Geom.dims(g);
     const s = solved.get(g.id);
-    const rpm = (s.omega * 60) / TAU;
-    const driver = byId(s.driver);
-    const rows = [
-      ['Pitch Ø', fmt(2 * d.r) + ' mm'],
-      [g.internal ? 'Tip Ø (inner)' : 'Tip Ø', fmt(2 * d.ra) + ' mm'],
-      ['Root Ø', fmt(2 * d.rf) + ' mm'],
-      ['Base Ø', fmt(2 * d.rb) + ' mm'],
-    ];
-    if (g.internal) rows.push(['Outer Ø', fmt(2 * d.outer) + ' mm']);
-    rows.push(
-      ['Circular pitch', fmt(Math.PI * g.module) + ' mm'],
-      ['Tooth height', fmt(2.25 * g.module) + ' mm'],
-      ['Speed', `${fmt(Math.abs(rpm))} rpm ${rpm >= 0 ? 'CW' : 'CCW'}`],
-    );
-    if (driver && driver.id !== g.id && driver.rpm !== 0) {
-      const ratio = driver.rpm / rpm;
-      rows.push([`Ratio to ${driver.name}`, `${fmt(Math.abs(ratio), 4)} : 1`]);
-    }
-    if (g.relation === 'mesh') {
-      const p = byId(g.parent);
-      rows.push(['Centre distance', fmt(Math.abs(Geom.centerDistance(p, g))) + ' mm']);
-      rows.push(['Contact ratio', fmt(Geom.contactRatio(p, g), 3)]);
-    }
-    if (!g.internal) {
-      const zmin = Math.ceil(2 / Math.sin(g.pressureAngle * DEG) ** 2);
-      if (g.teeth < zmin) rows.push(['Note', `Undercut likely below ${zmin} teeth (not modelled)`]);
+    const rows = [];
+    const p = g.parent != null ? byId(g.parent) : null;
+
+    if (isRack(g)) {
+      rows.push(
+        ['Pitch', fmt(d.p) + ' mm'],
+        ['Length', fmt(d.len) + ' mm'],
+        ['Overall height', fmt(d.tipY - d.backY) + ' mm'],
+        ['Tooth height', fmt(d.tipY - d.rootY) + ' mm'],
+        ['Linear speed', fmt(Math.abs(s.v || 0), 2) + ' mm/s'],
+      );
+      if (p) {
+        rows.push(['Travel per turn of ' + p.name, fmt(Math.PI * p.module * p.teeth) + ' mm']);
+        rows.push(['Contact ratio', fmt(Geom.contactRatio(p, g), 3)]);
+      }
+    } else {
+      const rpm = (s.omega * 60) / TAU;
+      const driver = byId(s.driver);
+      rows.push(
+        ['Pitch Ø', fmt(2 * d.r) + ' mm'],
+        [g.internal ? 'Tip Ø (inner)' : 'Tip Ø', fmt(2 * d.ra) + ' mm'],
+        ['Root Ø', fmt(2 * d.rf) + ' mm'],
+        ['Base Ø', fmt(2 * d.rb) + ' mm'],
+      );
+      if (g.internal) rows.push(['Outer Ø', fmt(2 * d.outer) + ' mm']);
+      rows.push(
+        ['Circular pitch', fmt(Math.PI * g.module) + ' mm'],
+        ['Tooth height', fmt(Math.abs(d.ra - d.rf)) + ' mm'],
+        ['Speed', `${fmt(Math.abs(rpm))} rpm ${rpm >= 0 ? 'CW' : 'CCW'}`],
+      );
+      if (driver && driver.id !== g.id && driver.rpm !== 0) {
+        rows.push([`Ratio to ${driver.name}`, `${fmt(Math.abs(driver.rpm / rpm), 4)} : 1`]);
+      }
+      if (g.relation === 'mesh' && p) {
+        const mg = Geom.meshGeometry(p, g);
+        rows.push(['Centre distance', fmt(Math.abs(mg.a)) + ' mm']);
+        if (Math.abs(mg.alphaW - g.pressureAngle * DEG) > 1e-6) rows.push(['Working pressure angle', fmt(mg.alphaW / DEG, 2) + '°']);
+        rows.push(['Contact ratio', fmt(Geom.contactRatio(p, g), 3)]);
+      }
+      if (isExternal(g)) {
+        const xmin = Geom.minShift(g);
+        if (g.shift < xmin - 1e-3) {
+          const fix = Math.ceil(xmin * 100) / 100;
+          const btn = document.createElement('button');
+          btn.textContent = `Set shift to ${fix}`;
+          btn.addEventListener('click', () => { g.shift = fix; changed(); });
+          rows.push(['Undercut likely (not drawn)', btn]);
+        }
+      }
     }
     for (const [k, v] of rows) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<th></th><td></td>`;
-      tr.children[0].textContent = k;
-      tr.children[1].textContent = v;
+      const th = document.createElement('th');
+      const td = document.createElement('td');
+      th.textContent = k;
+      if (v instanceof Node) td.appendChild(v); else td.textContent = v;
+      tr.append(th, td);
       t.appendChild(tr);
     }
   }
@@ -601,17 +795,25 @@
 
   function hitTest(sx, sy) {
     const [wx, wy] = s2w(sx, sy);
-    const order = state.gears.slice().sort((a, b) => solved.get(b.id).plane - solved.get(a.id).plane);
     let best = null;
-    for (const g of order) {
+    for (const g of state.gears) {
       const s = solved.get(g.id);
       const d = Geom.dims(g);
-      const r = Math.hypot(wx - s.x, wy - s.y);
-      const inside = g.internal ? r >= d.ra && r <= d.outer : r <= d.ra;
+      let inside, size;
+      if (isRack(g)) {
+        const dx = wx - s.x, dy = wy - s.y, c = Math.cos(s.phi), sn = Math.sin(s.phi);
+        const lx = dx * c + dy * sn, ly = -dx * sn + dy * c;
+        inside = Math.abs(lx) <= d.len / 2 && ly >= d.backY && ly <= d.tipY;
+        size = d.len / 2;
+      } else {
+        const r = Math.hypot(wx - s.x, wy - s.y);
+        inside = g.internal ? r >= d.ra && r <= d.outer : r <= d.ra;
+        size = d.ra;
+      }
       if (!inside) continue;
-      // Prefer the top plane, then the smallest gear on it.
-      if (!best || s.plane > best.plane || (s.plane === best.plane && d.ra < best.size)) {
-        best = { g, plane: s.plane, size: d.ra };
+      // Prefer the top plane, then the smallest part on it.
+      if (!best || s.plane > best.plane || (s.plane === best.plane && size < best.size)) {
+        best = { g, plane: s.plane, size };
       }
     }
     return best ? best.g : null;
@@ -703,8 +905,8 @@
 
   // ---------------------------------------------------------------- export
 
-  function download(name, text, type) {
-    const blob = new Blob([text], { type });
+  function download(name, data, type) {
+    const blob = new Blob([data], { type });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -715,15 +917,34 @@
 
   const fileBase = (g) => `${g.name.replace(/[^\w.-]+/g, '_')}_${g.teeth}T_m${g.module}`;
 
+  function bounds(pathsList) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const pts of pathsList) {
+      for (const [x, y] of pts) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    return { x0, y0, x1, y1 };
+  }
+
+  function describe(g) {
+    const d = Geom.dims(g);
+    const base = `${g.name}: ${g.teeth} teeth, module ${g.module}, PA ${g.pressureAngle}°`;
+    if (isRack(g)) return `${base}, rack length ${fmt(d.len)} mm`;
+    return `${base}, pitch Ø ${fmt(2 * d.r)} mm` + (g.shift ? `, shift ${g.shift}` : '');
+  }
+
   function exportSelectedSVG() {
     const g = selected();
     if (!g) return;
-    const { paths, dims } = Geom.gearPaths(g);
-    const R = dims.outer + 2;
-    const size = (2 * R).toFixed(3);
+    const { paths } = Geom.gearPaths(g);
+    const b = bounds(paths);
+    const m = 2;
+    const w = (b.x1 - b.x0 + 2 * m).toFixed(3), h = (b.y1 - b.y0 + 2 * m).toFixed(3);
     const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${size}mm" height="${size}mm" viewBox="${-R} ${-R} ${size} ${size}">
-  <!-- ${g.name}: ${g.teeth} teeth, module ${g.module}, PA ${g.pressureAngle}°, pitch Ø ${(2 * dims.r).toFixed(3)} mm -->
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="${(b.x0 - m).toFixed(3)} ${(b.y0 - m).toFixed(3)} ${w} ${h}">
+  <!-- ${describe(g)} -->
   <path d="${Geom.svgPathData(paths)}" fill="none" stroke="#000" stroke-width="0.1" fill-rule="evenodd"/>
   <circle cx="0" cy="0" r="0.5" fill="none" stroke="#f00" stroke-width="0.1"/>
 </svg>
@@ -738,28 +959,81 @@
     download(fileBase(g) + '.dxf', Geom.dxf(paths.map((p) => Geom.transformPts(p, 0, 0, 0, true))), 'application/dxf');
   }
 
+  function exportSelectedSTL() {
+    const g = selected();
+    if (!g) return;
+    const { paths } = Geom.gearPaths(g);
+    // Flip Y so the part looks the same from above (+Z) as on screen.
+    const buf = Geom.stl(paths.map((p) => Geom.transformPts(p, 0, 0, 0, true)), g.thickness, describe(g));
+    download(fileBase(g) + '.stl', buf, 'model/stl');
+  }
+
+  /** World-space paths for every part in the current layout. */
+  function layoutParts() {
+    const order = state.gears.slice().sort((a, b) => solved.get(a.id).plane - solved.get(b.id).plane);
+    return order.map((g) => {
+      const s = solved.get(g.id);
+      const paths = Geom.gearPaths(g).paths.map((p) => Geom.transformPts(p, s.x, s.y, s.phi, false));
+      return { g, s, paths };
+    });
+  }
+
   function exportLayoutSVG() {
     if (!state.gears.length) return;
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    const body = [];
-    const order = state.gears.slice().sort((a, b) => solved.get(a.id).plane - solved.get(b.id).plane);
-    for (const g of order) {
-      const s = solved.get(g.id);
-      const { paths, dims } = Geom.gearPaths(g);
-      const tp = paths.map((p) => Geom.transformPts(p, s.x, s.y, s.phi, false));
-      x0 = Math.min(x0, s.x - dims.outer); x1 = Math.max(x1, s.x + dims.outer);
-      y0 = Math.min(y0, s.y - dims.outer); y1 = Math.max(y1, s.y + dims.outer);
-      body.push(`  <path id="${fileBase(g)}" d="${Geom.svgPathData(tp)}" fill="${g.color}" fill-opacity="0.85" stroke="#000" stroke-width="0.15" fill-rule="evenodd"/>`);
-    }
+    const parts = layoutParts();
+    const b = bounds(parts.flatMap((p) => p.paths));
     const m = 5;
-    x0 -= m; y0 -= m; x1 += m; y1 += m;
-    const w = (x1 - x0).toFixed(3), h = (y1 - y0).toFixed(3);
+    const w = (b.x1 - b.x0 + 2 * m).toFixed(3), h = (b.y1 - b.y0 + 2 * m).toFixed(3);
+    const body = parts.map(({ g, paths }) =>
+      `  <path id="${fileBase(g)}" d="${Geom.svgPathData(paths)}" fill="${g.color}" fill-opacity="0.85" stroke="#000" stroke-width="0.15" fill-rule="evenodd"/>`);
     const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="${x0.toFixed(3)} ${y0.toFixed(3)} ${w} ${h}">
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="${(b.x0 - m).toFixed(3)} ${(b.y0 - m).toFixed(3)} ${w} ${h}">
 ${body.join('\n')}
 </svg>
 `;
     download('gear_layout.svg', svg, 'image/svg+xml');
+  }
+
+  // ---------------------------------------------------------------- print (true scale)
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function printParts(which) {
+    let parts;
+    if (which === 'selected') {
+      const g = selected();
+      if (!g) return;
+      parts = [{ g, s: { x: 0, y: 0, phi: 0 }, paths: Geom.gearPaths(g).paths }];
+    } else {
+      if (!state.gears.length) return;
+      parts = layoutParts();
+    }
+    const b = bounds(parts.flatMap((p) => p.paths));
+    const m = 6;
+    const bar = 50; // mm
+    const x0 = b.x0 - m, y0 = b.y0 - m;
+    const w = b.x1 - b.x0 + 2 * m;
+    const h = b.y1 - b.y0 + 2 * m + 14; // room for the scale bar
+    const body = [];
+    for (const { g, s, paths } of parts) {
+      body.push(`<path d="${Geom.svgPathData(paths)}" fill="${which === 'selected' ? 'none' : g.color}" fill-opacity="0.25" stroke="#000" stroke-width="0.2" fill-rule="evenodd"/>`);
+      if (!isRack(g)) {
+        body.push(`<path d="M${s.x - 3} ${s.y} H${s.x + 3} M${s.x} ${s.y - 3} V${s.y + 3}" stroke="#000" stroke-width="0.15"/>`);
+      }
+    }
+    const by = b.y1 + m + 6;
+    body.push(`<path d="M${x0 + m} ${by} h${bar} M${x0 + m} ${by - 2} v4 M${x0 + m + bar} ${by - 2} v4" stroke="#000" stroke-width="0.3" fill="none"/>`);
+    body.push(`<text x="${x0 + m}" y="${by + 6}" font-size="3" font-family="sans-serif">${bar} mm — measure this to check the print scale</text>`);
+
+    const list = parts.map(({ g }) => `<li>${esc(describe(g))}</li>`).join('');
+    const tooBig = w > 190 || h > 277;
+    $('print-area').innerHTML = `
+      <h1>GearGen — ${which === 'selected' ? esc(parts[0].g.name) : 'layout'} (1:1)</h1>
+      <p>Print at <b>100% / “Actual size”</b> with scaling turned off. The bar below the drawing should measure exactly ${bar} mm.</p>
+      ${tooBig ? `<p class="warn">This drawing is ${fmt(w, 0)} × ${fmt(h, 0)} mm, which is larger than an A4 page — choose a larger paper size or export the SVG instead.</p>` : ''}
+      <svg xmlns="http://www.w3.org/2000/svg" width="${w.toFixed(3)}mm" height="${h.toFixed(3)}mm" viewBox="${x0.toFixed(3)} ${y0.toFixed(3)} ${w.toFixed(3)} ${h.toFixed(3)}">${body.join('')}</svg>
+      <ul>${list}</ul>`;
+    window.print();
   }
 
   // ---------------------------------------------------------------- wiring
@@ -770,6 +1044,8 @@ ${body.join('\n')}
   }
 
   $('btn-play').addEventListener('click', () => setRunning(!running));
+  $('btn-undo').addEventListener('click', undo);
+  $('btn-redo').addEventListener('click', redo);
   $('speed').addEventListener('input', (e) => {
     speed = parseFloat(e.target.value);
     $('speed-val').textContent = speed.toFixed(2) + '×';
@@ -780,11 +1056,15 @@ ${body.join('\n')}
   $('btn-add-free').addEventListener('click', addFreeGear);
   $('btn-add-mesh').addEventListener('click', addMeshGear);
   $('btn-add-axle').addEventListener('click', addAxleGear);
+  $('btn-add-rack').addEventListener('click', addRack);
   $('btn-detach').addEventListener('click', detachSelected);
   $('btn-delete').addEventListener('click', deleteSelected);
   $('btn-svg').addEventListener('click', exportSelectedSVG);
   $('btn-dxf').addEventListener('click', exportSelectedDXF);
+  $('btn-stl').addEventListener('click', exportSelectedSTL);
   $('btn-layout-svg').addEventListener('click', exportLayoutSVG);
+  $('btn-print-sel').addEventListener('click', () => printParts('selected'));
+  $('btn-print-layout').addEventListener('click', () => printParts('layout'));
   $('btn-save').addEventListener('click', () => download('gears.json', JSON.stringify(state, null, 2), 'application/json'));
   $('btn-load').addEventListener('click', () => $('file-input').click());
   $('file-input').addEventListener('change', async (e) => {
@@ -800,7 +1080,7 @@ ${body.join('\n')}
     }
   });
   $('btn-reset').addEventListener('click', () => {
-    if (!confirm('Discard all gears and start over?')) return;
+    if (!confirm('Discard all gears and start over? (You can undo this.)')) return;
     defaultState();
     changed();
     fit();
@@ -809,9 +1089,14 @@ ${body.join('\n')}
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName) || '';
     if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
-    if (e.code === 'Space') { e.preventDefault(); setRunning(!running); }
+    const mod = e.ctrlKey || e.metaKey;
+    const key = e.key.toLowerCase();
+    if (mod && key === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+    else if (mod && key === 'y') { e.preventDefault(); redo(); }
+    else if (mod) return;
+    else if (e.code === 'Space') { e.preventDefault(); setRunning(!running); }
     else if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
-    else if (e.key === 'f') fit();
+    else if (key === 'f') fit();
   });
 
   const ro = new ResizeObserver(resize);

@@ -129,7 +129,8 @@ button {
   padding: 5px 10px;
   cursor: pointer;
 }
-button:hover { border-color: var(--accent); }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: default; }
 button.danger { color: var(--danger); }
 button[hidden] { display: none; }
 
@@ -150,6 +151,16 @@ button[hidden] { display: none; }
   margin: 5px 0;
 }
 .field.check { display: flex; }
+#props h3 {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 14px 0 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--glass-border);
+}
+#props h3:first-child { border-top: 0; padding-top: 0; margin-top: 4px; }
+#info td button { padding: 2px 8px; font-size: 12px; }
 .field input:not([type="checkbox"]), .field select {
   width: 100%;
   font: inherit;
@@ -177,4 +188,20 @@ kbd { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-
   #stage { position: relative; height: 60vh; }
   #toolbar, #status { right: 12px; }
   #panel { position: static; width: auto; margin: 12px; }
+}
+
+/* True-scale printing: only the print area is shown on paper. */
+#print-area { display: none; }
+
+@page { margin: 10mm; }
+
+@media print {
+  html, body { background: #fff; color: #000; height: auto; }
+  #app { display: none; }
+  #print-area { display: block; font: 10pt/1.4 system-ui, sans-serif; }
+  #print-area h1 { font-size: 13pt; margin: 0 0 4px; }
+  #print-area p { margin: 0 0 6px; }
+  #print-area .warn { color: #a00; font-weight: 600; }
+  #print-area svg { display: block; margin: 6px 0; }
+  #print-area ul { margin: 6px 0 0; padding-left: 18px; }
 }
